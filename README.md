@@ -35,8 +35,10 @@ To build eduke32.html with emcc run:
 make EMSCRIPTEN=1 HTML=1
 ```
 You can load the html file with a webserver, for instance darkhttpd.
-You will have to supply DUKE3D.GRP yourself.
-
+You will have to supply a copy of the original game files `duke3d-folder` yourself they can be pre-loaded as such:
+```
+make EMSCRIPTEN=1 HTML=1 EMSPRELOAD=<duke3d-folder>
+```
 The OBJECT files will be removed by running `make clean`
 
 ### Acknowledgements
