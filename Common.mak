@@ -62,6 +62,11 @@ ifeq ($(PLATFORM),WII)
 endif
 
 CLANG?=0
+EMSCRIPTEN?=0
+
+ifeq ($(EMSCRIPTEN),1)
+	CLANG:=1
+endif
 
 CLANG_POTENTIAL_VERSION := $(shell $(CCFULLPATH) --version)
 
@@ -69,8 +74,11 @@ ifeq ($(findstring clang,$(CC)),clang)
     override CLANG=1
     CLANGNAME:=$(CC)
 else
-	if
-    CLANGNAME:=clang
+	ifeq ($(EMSCRIPTEN),1)
+		CLANGNAME:=emcc
+	else
+		CLANGNAME:=clang
+	endif
 endif
 # detect clang symlinked as gcc, as in OS X
 ifeq ($(findstring clang,$(CLANG_POTENTIAL_VERSION)),clang)
