@@ -69,6 +69,7 @@ ifeq ($(findstring clang,$(CC)),clang)
     override CLANG=1
     CLANGNAME:=$(CC)
 else
+	if
     CLANGNAME:=clang
 endif
 # detect clang symlinked as gcc, as in OS X
@@ -281,9 +282,15 @@ ifneq ($(RELEASE)$(DEBUGANYWAY),10)
     OPTIMIZATIONS += $(DEBUGFLAG)
 endif
 
-CSTD:=-std=gnu99
+
+ifeq ($(CC),gcc)
+	CXXSTD:=-std=gnu++03
+	CSTD:=-std=gnu99
+else
+	CXXSTD:=-std=c++03
+	CSTD:=-std=c99
+endif
 CONLYFLAGS=$(CSTD) -Wimplicit -Werror-implicit-function-declaration
-CXXSTD:=-std=gnu++03
 CXXONLYFLAGS=$(CXXSTD) -fno-exceptions -fno-rtti
 ASFORMAT=elf$(BITS)
 ASFLAGS=-s -f $(ASFORMAT) #-g
