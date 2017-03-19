@@ -284,6 +284,7 @@ defined __x86_64__ || defined __amd64__ || defined _M_X64 || defined _M_IA64 || 
 #elif defined(__EMSCRIPTEN__)
 # define B_LITTLE_ENDIAN 1
 # define B_BIG_ENDIAN    0
+# define B_USE_COMPAT_SWAP 1
 
 #endif
 
