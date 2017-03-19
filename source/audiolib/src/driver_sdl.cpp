@@ -59,6 +59,7 @@ static uint8_t *DummyBuffer = NULL;
 static int32_t InterruptsDisabled = 0;
 static SDL_mutex *EffectFence;
 
+#if !defined __EMSCRIPTEN__
 static void fillData(int chan, void *ptr, int remaining, void *udata)
 {
 	int32_t len;
@@ -101,7 +102,7 @@ static void fillData(int chan, void *ptr, int remaining, void *udata)
 
     SDL_UnlockMutex(EffectFence);
 }
-
+#endif
 
 int32_t SDLDrv_GetError(void)
 {
@@ -190,6 +191,7 @@ int32_t SDLDrv_PCM_Init(int32_t *mixrate, int32_t *numchannels, void * initdata)
 
     int intmixrate = *mixrate;
     int intnumchannels = *numchannels;
+#if !defined __EMSCRIPTEN__
     if (Mix_QuerySpec(&intmixrate, &fmt, &intnumchannels))
     {
         if (fmt == AUDIO_U8 || fmt == AUDIO_S8)
@@ -198,6 +200,9 @@ int32_t SDLDrv_PCM_Init(int32_t *mixrate, int32_t *numchannels, void * initdata)
             return SDLErr_Error;
         }
     }
+#else
+    fmt=0;
+#endif
     *mixrate = intmixrate;
     *numchannels = intnumchannels;
 
@@ -205,9 +210,11 @@ int32_t SDLDrv_PCM_Init(int32_t *mixrate, int32_t *numchannels, void * initdata)
 
     EffectFence = SDL_CreateMutex();
 
+#if !defined __EMSCRIPTEN__
     // channel 0 and 1 are actual sounds
     // dummy channel 2 runs our fillData() callback as an effect
     Mix_RegisterEffect(2, fillData, NULL, NULL);
+#endif
 
     DummyBuffer = (uint8_t *) calloc(1, chunksize);
 

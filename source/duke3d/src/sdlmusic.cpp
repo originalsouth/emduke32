@@ -105,7 +105,9 @@ int32_t MUSIC_Init(int32_t SoundCard, int32_t Address)
 #endif
     // Use an external MIDI player if the user has specified to do so
     char *command = getenv("EDUKE32_MUSIC_CMD");
+#if !defined __EMSCRIPTEN__
     const SDL_version *linked = Mix_Linked_Version();
+#endif
 
     UNREFERENCED_PARAMETER(SoundCard);
     UNREFERENCED_PARAMETER(Address);
@@ -116,12 +118,14 @@ int32_t MUSIC_Init(int32_t SoundCard, int32_t Address)
         return MUSIC_Error;
     } // if
 
+#ifdef __EMSCRIPTEN
     if (SDL_VERSIONNUM(linked->major,linked->minor,linked->patch) < MIX_REQUIREDVERSION)
     {
         // reject running with SDL_Mixer versions older than what is stated in sdl_inc.h
         initprintf("You need at least v%d.%d.%d of SDL_mixer for music\n",SDL_MIXER_MIN_X,SDL_MIXER_MIN_Y,SDL_MIXER_MIN_Z);
         return MUSIC_Error;
     }
+#endif
 
     external_midi = (command != NULL && command[0] != 0);
 
@@ -339,11 +343,13 @@ int32_t MUSIC_StopSong(void)
 #endif
 
     //if (!fx_initialized)
+#if !defined __EMSCRIPTEN__
     if (!Mix_QuerySpec(NULL, NULL, NULL))
     {
         setErrorMessage("Need FX system initialized, too. Sorry.");
         return MUSIC_Error;
     } // if
+#endif
 
     if ((Mix_PlayingMusic()) || (Mix_PausedMusic()))
         Mix_HaltMusic();
