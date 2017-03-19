@@ -71,8 +71,15 @@ ifeq ($(EMSCRIPTEN),1)
 	HAVE_FLAC:=0
 	WITHOUT_GTK:=1
 	EMFLAGS= -s USE_LIBPNG=1 -s USE_ZLIB=1 -s USE_OGG=1 -s USE_VORBIS=1 -s USE_PTHREADS=1 -s USE_SDL=2
+	ifeq ($(HTML),1)
+		EXT:=.html
+	else
+		EXT=.js
+	endif
 endif
 
+DUKE3D_GAME ?= eduke32$(EXT)
+DUKE3D_EDITOR ?= mapster32$(EXT)
 CLANG_POTENTIAL_VERSION := $(shell $(CCFULLPATH) --version)
 
 ifeq ($(findstring clang,$(CC)),clang)
