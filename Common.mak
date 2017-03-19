@@ -63,9 +63,11 @@ endif
 
 CLANG?=0
 EMSCRIPTEN?=0
+EMSLIKE?=0
 
 ifeq ($(EMSCRIPTEN),1)
 	STRIP:=
+	EMPRELOAD:=
 	CLANG:=1
 	POLYMER:=0
 	USE_OPENGL:=0
@@ -1075,6 +1077,9 @@ ifneq (,$(CXXFLAGS))
 endif
 ifneq (,$(LDFLAGS))
     LINKERFLAGS+= $(LDFLAGS)
+endif
+ifneq (,$(EMPRELOAD))
+    LINKERFLAGS+= --preload-file $(EMPRELOAD)@/home/web_user/.eduke32/
 endif
 
 ifeq ($(PRETTY_OUTPUT),1)
