@@ -34,6 +34,9 @@
 #ifdef __ANDROID__
 # include <android/log.h>
 #endif
+#ifdef __EMSCRIPTEN__
+# include <emscripten.h>
+#endif
 #if defined GEKKO
 # include "wiibits.h"
 # include <ogc/lwp.h>
@@ -441,12 +444,12 @@ int main(int argc, char *argv[])
 
     buildkeytranslationtable();
 
-#ifndef __ANDROID__
+#if !defined __ANDROID__ && !defined __EMSCRIPTEN__
     signal(SIGSEGV, sighandler);
     signal(SIGILL, sighandler);  /* clang -fcatch-undefined-behavior uses an ill. insn */
     signal(SIGABRT, sighandler);
     signal(SIGFPE, sighandler);
-#else
+#elif defined __ANDROID__
     SDL_SetEventFilter(sdlayer_mobilefilter, NULL);
 #endif
 
@@ -2385,6 +2388,12 @@ int32_t handleevents(void)
 
 #ifndef _WIN32
     startwin_idle(NULL);
+#endif
+
+#ifdef __EMSCRIPTEN__
+    // ASYNCIFY yield: hand control back to the browser event loop each frame
+    // so it can paint, dispatch input, and keep the tab responsive.
+    emscripten_sleep(1);
 #endif
 
     return rv;

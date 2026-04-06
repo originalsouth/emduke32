@@ -12,11 +12,7 @@ DUKE3D_RSRC=$(DUKE3D_ROOT)/rsrc
 ENGINE_ROOT=$(source)/$(ENGINE)
 ENGINE_SRC=$(ENGINE_ROOT)/src
 ENGINE_INC=$(ENGINE_ROOT)/include
-ifeq ($(EMSCRIPTEN),1)
-	o=bc
-else
-	o=o
-endif
+o=o
 asm=nasm
 obj=obj
 
@@ -675,6 +671,16 @@ ifeq ($(PRETTY_OUTPUT),1)
 endif
 .PHONY: all duke3d test kenbuild sw veryclean clean cleanduke3d cleantest cleansw cleanutils utils dxutils sdlutils printutils printsdlutils printdxutils cleantools tools dxtools sdltools printtools printsdltools printdxtools rev $(ENGINE_OBJ)/rev.$o
 .SUFFIXES:
+
+# Emscripten: strip host system libraries that got appended by platform=LINUX/etc. blocks above.
+# emcc's -s USE_LIBPNG=1 / USE_ZLIB=1 / USE_SDL=2 / USE_SDL_MIXER=2 / USE_OGG=1 / USE_VORBIS=1
+# flags already provide these via the sysroot; raw -lFLAC/-lSDL2 and /usr/lib/*.so paths make
+# wasm-ld fail with "unknown file type".
+ifeq ($(EMSCRIPTEN),1)
+    override LIBS=
+    override LIBDIRS=
+    override GUI_LIBS=
+endif
 
 # TARGETS
 
