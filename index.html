@@ -109,11 +109,56 @@ function unlockAudio() {
 document.addEventListener('click', unlockAudio, { once: false });
 document.addEventListener('keydown', unlockAudio, { once: false });
 
+// --- Visibility handling ---
+// When the tab is backgrounded, setInterval/setTimeout (and therefore
+// emscripten_sleep) get throttled to ~1 Hz. On resume, TinySynth's scheduler
+// would try to catch up by scheduling every missed MIDI event at once, and
+// the stale playTime offset can wedge the audio graph — visible as a black
+// canvas because the main thread is tied up. We stop the synth on hide and
+// re-arm timing on show.
+document.addEventListener('visibilitychange', function() {
+  if (document.visibilityState === 'hidden') {
+    if (midiPollInterval) {
+      clearInterval(midiPollInterval);
+      midiPollInterval = null;
+    }
+    try { if (window.tinySynth) window.tinySynth.stopMIDI(); } catch (e) {}
+  } else {
+    try {
+      if (Module.SDL2 && Module.SDL2.audioContext) Module.SDL2.audioContext.resume();
+    } catch (e) {}
+    try {
+      if (window.tinySynth && window.tinySynth.getAudioContext) {
+        var ctx = window.tinySynth.getAudioContext();
+        if (ctx) {
+          ctx.resume();
+          window.tinySynth.playTime = ctx.currentTime + 0.1;
+        }
+      }
+    } catch (e) {}
+    if (window.tinySynth) startMidiPolling();
+    // Nudge SDL2 to re-query canvas size and push one fresh frame in case
+    // the backbuffer was invalidated while hidden.
+    requestAnimationFrame(function() {
+      try { window.dispatchEvent(new Event('resize')); } catch (e) {}
+    });
+  }
+});
+
 // Initialize TinySynth after vendor/webaudio-tinysynth/webaudio-tinysynth.js loads.
 function initTinySynth() {
   if (typeof WebAudioTinySynth !== 'undefined' && !window.tinySynth) {
     window.tinySynth = new WebAudioTinySynth({quality:1, useReverb:1});
     window.tinySynth.setMasterVol(0.5);
+    // Gate scheduling while the tab is hidden: when timers resume after a
+    // long background throttle, TinySynth's internal scheduler would otherwise
+    // synchronously schedule every missed MIDI event, spawning thousands of
+    // WebAudio nodes at once and stalling the main thread.
+    var _origSend = window.tinySynth.send;
+    window.tinySynth.send = function(msg, t) {
+      if (document.hidden) return;
+      return _origSend(msg, t);
+    };
     console.log('TinySynth MIDI synthesizer ready');
   }
 }
@@ -158,9 +203,25 @@ function startMidiPolling() {
 }
 
 // --- WebGL context loss ---
+// alert() blocks the JS loop and makes the page feel frozen; show a
+// non-blocking overlay instead. preventDefault() lets the browser attempt
+// restoration, which we log for diagnostic purposes — Emscripten's GL layer
+// doesn't actually recover, so the click-to-reload path is the escape hatch.
 canvas.addEventListener('webglcontextlost', function(e) {
   e.preventDefault();
-  alert('WebGL context lost. Please reload the page.');
+  log('[webgl] context lost');
+  var overlay = document.getElementById('webgl-lost');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'webgl-lost';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.9);display:flex;align-items:center;justify-content:center;color:#ccc;font:16px/1.5 system-ui,sans-serif;cursor:pointer;z-index:20;text-align:center;padding:20px';
+    overlay.innerHTML = '<div>WebGL context lost<br><span style="font-size:13px;color:#888">Click to reload</span></div>';
+    overlay.addEventListener('click', function() { location.reload(); });
+    document.body.appendChild(overlay);
+  }
+});
+canvas.addEventListener('webglcontextrestored', function() {
+  log('[webgl] context restored');
 });
 
 // --- Fullscreen ---
@@ -520,14 +581,24 @@ dropzone.addEventListener('drop', function(e) {
 });
 
 // --- Detect preloaded data or show drop zone ---
-fetch('eduke32.data', { method: 'HEAD' }).then(function(r) {
-  if (r.ok) {
+// A stale eduke32.data from a previous preload-enabled build can sit next
+// to a freshly rebuilt no-preload eduke32.js. A HEAD on the data file alone
+// would then false-positive into the preload path, the engine would boot
+// into an empty VFS, and print "Found no recognized game data". Inspect
+// the glue source for a baked-in preload loader before trusting the
+// data file.
+fetch('eduke32.js').then(function(r) {
+  if (!r.ok) throw new Error('no engine');
+  return r.text();
+}).then(function(src) {
+  var hasPreload = /expectedDataFileDownloads|DUKE3D\.GRP/.test(src);
+  if (!hasPreload) throw new Error('no preload');
+  return fetch('eduke32.data', { method: 'HEAD' }).then(function(r) {
+    if (!r.ok) throw new Error('no data');
     statusEl.textContent = 'Loading game data...';
     prepareInitSequence(null);
     loadEngine();
-  } else {
-    throw new Error('no data');
-  }
+  });
 }).catch(function() {
   statusEl.textContent = 'Waiting for game data...';
   dropzone.classList.remove('hidden');
