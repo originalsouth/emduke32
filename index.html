@@ -22,6 +22,10 @@ body{background:#111;color:#ccc;font-family:system-ui,-apple-system,sans-serif;d
 #dropzone.dragover p{color:#fff}
 #audio-hint{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);color:#555;font-size:12px;transition:opacity .3s}
 #audio-hint.hidden{opacity:0;pointer-events:none}
+#footer{margin-top:16px;padding:12px 0 4px;font-size:11px;color:#666;line-height:1.7;text-align:center;border-top:1px solid #1e1e1e}
+#footer a{color:#888;text-decoration:none;border-bottom:1px dotted #3a3a3a}
+#footer a:hover{color:#ccc;border-bottom-color:#666}
+#footer .sep{color:#333;margin:0 6px}
 canvas:fullscreen,canvas:-webkit-full-screen{width:100vw;height:100vh;object-fit:contain;background:#000}
 </style>
 </head>
@@ -34,6 +38,15 @@ canvas:fullscreen,canvas:-webkit-full-screen{width:100vw;height:100vh;object-fit
     <span id="status">Initializing...</span>
   </div>
   <textarea id="output" readonly></textarea>
+  <footer id="footer">
+    <a href="https://github.com/originalsouth/emduke32" target="_blank" rel="noopener">emduke32</a> — EDuke32 compiled to WebAssembly
+    <span class="sep">·</span>
+    <a href="https://github.com/originalsouth/emduke32" target="_blank" rel="noopener">source (GPL-2.0)</a>
+    <span class="sep">·</span>
+    MIDI: <a href="https://github.com/g200kg/webaudio-tinysynth" target="_blank" rel="noopener">webaudio-tinysynth</a> (Apache-2.0)
+    <br>
+    DUKE3D.GRP &copy; 3D Realms / Gearbox — supply your own legally-owned copy
+  </footer>
 </div>
 <div id="dropzone" class="hidden">
   <p>Drop DUKE3D.GRP here or click to select</p>
