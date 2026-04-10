@@ -1,0 +1,116 @@
+name: Deploy to GitHub Pages
+
+# Build the Emscripten WASM port and publish it to GitHub Pages.
+#
+# The produced site contains the custom index.html loader, the webaudio-tinysynth
+# submodule, and the Emscripten outputs (eduke32.js + eduke32.wasm).
+# Notably, we do NOT pass EMPRELOAD, so no eduke32.data is generated: the page
+# falls back to the drop-zone flow (see index.html:468-479), and visitors
+# supply their own legally-owned DUKE3D.GRP at runtime. Their settings and
+# saves persist across reloads via the IndexedDB shim in index.html:182-391.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# Minimum permissions required for the deploy-pages action (OIDC-based).
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Queue new runs behind any in-flight deploy rather than cancelling it —
+# Pages deploys are "live state" and a cancelled half-deploy can leave the
+# site in a confusing transitional state.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build WASM and assemble site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Emscripten SDK
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          # Pinned to match the local toolchain (emcc 5.0.5-git as of 2026-04).
+          # Bump deliberately; don't use `latest` here — emsdk bumps have broken
+          # ASYNCIFY internals and -s flag syntax between point releases before.
+          version: 5.0.5
+          actions-cache-folder: emsdk-cache
+
+      - name: Show toolchain versions
+        run: |
+          emcc --version
+          make --version | head -1
+
+      # Incremental object cache. Key is per-commit so each commit starts with
+      # a fresh baseline, but restore-keys lets us reuse the most recent prior
+      # cache so make only recompiles files that actually changed.
+      - name: Restore object cache
+        uses: actions/cache@v4
+        with:
+          path: obj
+          key: eduke32-obj-emscripten-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            eduke32-obj-emscripten-${{ runner.os }}-
+
+      - name: Build eduke32 (Emscripten, no preload bundle)
+        # EMPRELOAD intentionally unset -> no eduke32.data shipped.
+        # HTML intentionally unset  -> we use our own index.html loader.
+        # Parallelism matches runner core count for sanity; -j8 was overkill.
+        run: make EMSCRIPTEN=1 -j"$(nproc)"
+
+      - name: Verify build artifacts
+        run: |
+          set -e
+          for f in eduke32.js eduke32.wasm; do
+            if [ ! -s "$f" ]; then
+              echo "::error::Expected build artifact '$f' is missing or empty"
+              exit 1
+            fi
+          done
+          ls -lh eduke32.js eduke32.wasm
+          file eduke32.wasm
+
+      - name: Assemble Pages site
+        run: |
+          set -e
+          mkdir -p _site/vendor/webaudio-tinysynth
+          cp index.html             _site/index.html
+          cp eduke32.js             _site/eduke32.js
+          cp eduke32.wasm           _site/eduke32.wasm
+          cp vendor/webaudio-tinysynth/webaudio-tinysynth.js \
+             _site/vendor/webaudio-tinysynth/webaudio-tinysynth.js
+          # Preserve upstream Apache-2.0 attribution alongside the served file.
+          cp vendor/webaudio-tinysynth/LICENSE \
+             _site/vendor/webaudio-tinysynth/LICENSE
+          echo "--- Final site layout ---"
+          find _site -type f -printf '%P  %s bytes\n' | sort
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
