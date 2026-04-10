@@ -78,7 +78,11 @@ ifeq ($(EMSCRIPTEN),1)
 	AR:=emar
 	RANLIB:=emranlib
 	EMFLAGS:= -s USE_LIBPNG=1 -s USE_ZLIB=1 -s USE_OGG=1 -s USE_VORBIS=1 -s USE_SDL=2 -s USE_SDL_MIXER=2
-	EMLINKFLAGS:= -s INITIAL_MEMORY=268435456 -s ALLOW_MEMORY_GROWTH=1 -s ASYNCIFY=1 -s ASYNCIFY_STACK_SIZE=524288 -s STACK_SIZE=5242880 -s EXIT_RUNTIME=0 -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","wasmMemory"]'
+	# FS + addRunDependency + removeRunDependency are required by index.html's
+	# IndexedDB persistence shim. They were auto-exported only when EMPRELOAD
+	# was set (the preload loader uses them internally); for no-preload builds
+	# (e.g. GitHub Pages) they must be requested explicitly.
+	EMLINKFLAGS:= -s INITIAL_MEMORY=268435456 -s ALLOW_MEMORY_GROWTH=1 -s ASYNCIFY=1 -s ASYNCIFY_STACK_SIZE=524288 -s STACK_SIZE=5242880 -s EXIT_RUNTIME=0 -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","wasmMemory","FS","addRunDependency","removeRunDependency"]'
 	ifeq ($(HTML),1)
 		EXT=.html
 	else
