@@ -35,6 +35,34 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #include "sdlayer.h"
 #include "music.h"
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+
+// MIDI command queue for JavaScript polling (avoids synchronous JS calls that break ASYNCIFY)
+static int g_midiCommand = 0;        // 0=none, 1=play, 2=stop
+static const void *g_midiData = NULL;
+static int g_midiDataSize = 0;
+static int g_midiLoop = 0;
+static int g_midiVolume = 128;
+
+extern "C" {
+EMSCRIPTEN_KEEPALIVE int emduke_getMidiCommand(void) { return g_midiCommand; }
+EMSCRIPTEN_KEEPALIVE const void *emduke_getMidiData(void) { return g_midiData; }
+EMSCRIPTEN_KEEPALIVE int emduke_getMidiSize(void) { return g_midiDataSize; }
+EMSCRIPTEN_KEEPALIVE int emduke_getMidiLoop(void) { return g_midiLoop; }
+EMSCRIPTEN_KEEPALIVE int emduke_getMidiVolume(void) { return g_midiVolume; }
+EMSCRIPTEN_KEEPALIVE void emduke_clearMidiCommand(void) { g_midiCommand = 0; }
+}
+
+static void js_play_midi(const void *data, int size, int loop) {
+    g_midiData = data;
+    g_midiDataSize = size;
+    g_midiLoop = loop;
+    g_midiCommand = 1;
+}
+static void js_stop_midi(void) { g_midiCommand = 2; }
+static void js_set_midi_volume(int vol) { g_midiVolume = vol; }
+#endif
 
 #if !defined _WIN32 && !defined(GEKKO)
 //# define FORK_EXEC_MIDI 1
@@ -212,6 +240,7 @@ fallback:
         initprintf("Error setting music command, falling back to timidity.\n");
     }
 
+#if !defined __EMSCRIPTEN__
     {
         static const char *s[] = { "/etc/timidity.cfg", "/etc/timidity/timidity.cfg", "/etc/timidity/freepats.cfg" };
         FILE *fp;
@@ -235,6 +264,7 @@ fallback:
         }
         Bfclose(fp);
     }
+#endif
 
     music_initialized = 1;
     return MUSIC_Ok;
@@ -269,6 +299,9 @@ void MUSIC_SetVolume(int32_t volume)
     volume = max(0, volume);
     volume = min(volume, 255);
 
+#ifdef __EMSCRIPTEN__
+    js_set_midi_volume(volume);
+#endif
     Mix_VolumeMusic(volume >> 1);  // convert 0-255 to 0-128.
 } // MUSIC_SetVolume
 
@@ -345,6 +378,9 @@ int32_t MUSIC_StopSong(void)
         return MUSIC_Error;
     } // if
 
+#ifdef __EMSCRIPTEN__
+    js_stop_midi();
+#endif
     if ((Mix_PlayingMusic()) || (Mix_PausedMusic()))
         Mix_HaltMusic();
 
@@ -447,15 +483,21 @@ int32_t MUSIC_PlaySong(char *song, int32_t loopflag)
         else initprintf("%s: fopen: %s\n", __func__, strerror(errno));
     }
     else
+    {
+#ifdef __EMSCRIPTEN__
+        js_play_midi(song, g_musicSize, (loopflag == MUSIC_LoopSong) ? 1 : 0);
+#else
         music_musicchunk = Mix_LoadMUS_RW(SDL_RWFromMem(song, g_musicSize)
 #if (SDL_MAJOR_VERSION > 1)
             , SDL_FALSE
 #endif
             );
 
-    if (music_musicchunk != NULL)
-        if (Mix_PlayMusic(music_musicchunk, (loopflag == MUSIC_LoopSong)?-1:0) == -1)
-            initprintf("Mix_PlayMusic: %s\n", Mix_GetError());
+        if (music_musicchunk != NULL)
+            if (Mix_PlayMusic(music_musicchunk, (loopflag == MUSIC_LoopSong)?-1:0) == -1)
+                initprintf("Mix_PlayMusic: %s\n", Mix_GetError());
+#endif
+    }
 
     return MUSIC_Ok;
 }

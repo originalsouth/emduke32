@@ -1,0 +1,6 @@
+[submodule "source"]
+	path = source
+	url = https://voidpoint.io/terminx/eduke32.git
+[submodule "vendor/webaudio-tinysynth"]
+	path = vendor/webaudio-tinysynth
+	url = https://github.com/g200kg/webaudio-tinysynth.git

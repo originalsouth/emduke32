@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Duke Nukem 3D</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#111;color:#ccc;font-family:system-ui,-apple-system,sans-serif;display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:16px}
+#container{width:100%;max-width:1024px}
+#canvas{width:100%;aspect-ratio:4/3;background:#000;display:block;outline:none}
+#controls{display:flex;align-items:center;gap:8px;padding:6px 0}
+#controls button{background:#222;color:#ccc;border:1px solid #333;padding:4px 12px;cursor:pointer;font:inherit;font-size:13px;border-radius:3px}
+#controls button:hover{background:#333}
+#status{flex:1;font-size:12px;color:#888;text-align:right;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+#output{display:none;width:100%;height:160px;background:#000;color:#0f0;font:13px/1.4 monospace;border:1px solid #222;padding:4px;resize:vertical}
+#dropzone{position:fixed;inset:0;background:rgba(0,0,0,.85);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:10;cursor:pointer}
+#dropzone.hidden{display:none}
+#dropzone p{color:#888;font-size:18px;margin-bottom:12px}
+#dropzone .hint{color:#555;font-size:13px}
+#dropzone.dragover{background:rgba(0,0,0,.95)}
+#dropzone.dragover p{color:#fff}
+#audio-hint{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);color:#555;font-size:12px;transition:opacity .3s}
+#audio-hint.hidden{opacity:0;pointer-events:none}
+canvas:fullscreen,canvas:-webkit-full-screen{width:100vw;height:100vh;object-fit:contain;background:#000}
+</style>
+</head>
+<body>
+<div id="container">
+  <canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+  <div id="controls">
+    <button id="btn-fs">Fullscreen</button>
+    <button id="btn-term">Terminal</button>
+    <span id="status">Initializing...</span>
+  </div>
+  <textarea id="output" readonly></textarea>
+</div>
+<div id="dropzone" class="hidden">
+  <p>Drop DUKE3D.GRP here or click to select</p>
+  <div class="hint">Required game data file (~32 MB)</div>
+  <input type="file" id="file-input" style="display:none" accept=".grp">
+</div>
+<div id="audio-hint">Click to enable audio</div>
+<script>
+'use strict';
+
+var output = document.getElementById('output');
+var statusEl = document.getElementById('status');
+var canvas = document.getElementById('canvas');
+var dropzone = document.getElementById('dropzone');
+var fileInput = document.getElementById('file-input');
+var btnFs = document.getElementById('btn-fs');
+var btnTerm = document.getElementById('btn-term');
+var audioHint = document.getElementById('audio-hint');
+var termVisible = false;
+var audioUnlocked = false;
+
+function log(text) {
+  output.value += text + '\n';
+  output.scrollTop = output.scrollHeight;
+}
+
+var Module = {
+  canvas: canvas,
+  print: function() { log(Array.prototype.slice.call(arguments).join(' ')); },
+  printErr: function() { log(Array.prototype.slice.call(arguments).join(' ')); },
+  setStatus: function(text) {
+    if (!text) return;
+    statusEl.textContent = text;
+    var m = text.match(/(\d+)\/(\d+)/);
+    if (m) statusEl.textContent = 'Loading... ' + m[1] + '/' + m[2];
+  },
+  totalDependencies: 0,
+  monitorRunDependencies: function(left) {
+    this.totalDependencies = Math.max(this.totalDependencies, left);
+    this.setStatus(left ? 'Loading... ' + (this.totalDependencies - left) + '/' + this.totalDependencies : 'Ready');
+  }
+};
+window.Module = Module;
+
+// --- Web Audio unlock + TinySynth init ---
+function unlockAudio() {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  audioHint.classList.add('hidden');
+  // Resume emscripten's SDL2 AudioContext
+  try {
+    if (Module.SDL2 && Module.SDL2.audioContext) Module.SDL2.audioContext.resume();
+  } catch (e) {}
+  // Resume TinySynth's AudioContext
+  try {
+    if (window.tinySynth && window.tinySynth.getAudioContext)
+      window.tinySynth.getAudioContext().resume();
+  } catch (e) {}
+}
+document.addEventListener('click', unlockAudio, { once: false });
+document.addEventListener('keydown', unlockAudio, { once: false });
+
+// Initialize TinySynth after vendor/webaudio-tinysynth/webaudio-tinysynth.js loads.
+function initTinySynth() {
+  if (typeof WebAudioTinySynth !== 'undefined' && !window.tinySynth) {
+    window.tinySynth = new WebAudioTinySynth({quality:1, useReverb:1});
+    window.tinySynth.setMasterVol(0.5);
+    console.log('TinySynth MIDI synthesizer ready');
+  }
+}
+
+// --- MIDI polling (reads commands set by C code, avoids synchronous JS-from-wasm calls) ---
+var midiPollInterval = null;
+function startMidiPolling() {
+  if (midiPollInterval) return;
+  var getCmd = function() { return Module._emduke_getMidiCommand(); };
+  var getData = function() { return Module._emduke_getMidiData(); };
+  var getSize = function() { return Module._emduke_getMidiSize(); };
+  var getLoop = function() { return Module._emduke_getMidiLoop(); };
+  var getVol = function() { return Module._emduke_getMidiVolume(); };
+  var clearCmd = function() { Module._emduke_clearMidiCommand(); };
+  var lastVol = -1;
+  midiPollInterval = setInterval(function() {
+    if (!window.tinySynth) return;
+    var cmd = getCmd();
+    if (cmd === 1) {
+      var ptr = getData();
+      var size = getSize();
+      var loop = getLoop();
+      console.log('MIDI play cmd: ptr=' + ptr + ' size=' + size + ' loop=' + loop);
+      if (ptr && size > 0) {
+        try {
+          var heap = new Uint8Array(Module.wasmMemory.buffer);
+          var arr = heap.slice(ptr, ptr + size);
+          window.tinySynth.stopMIDI();
+          window.tinySynth.setLoop(loop ? 1 : 0);
+          window.tinySynth.loadMIDI(arr.buffer);
+          window.tinySynth.playMIDI();
+        } catch(e) { console.error('MIDI play error:', e); }
+      }
+      clearCmd();
+    } else if (cmd === 2) {
+      window.tinySynth.stopMIDI();
+      clearCmd();
+    }
+    var vol = getVol();
+    if (vol !== lastVol) { window.tinySynth.setMasterVol(vol / 255.0); lastVol = vol; }
+  }, 50);
+}
+
+// --- WebGL context loss ---
+canvas.addEventListener('webglcontextlost', function(e) {
+  e.preventDefault();
+  alert('WebGL context lost. Please reload the page.');
+});
+
+// --- Fullscreen ---
+function toggleFullscreen() {
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+  } else {
+    canvas.requestFullscreen().catch(function() {});
+  }
+}
+btnFs.addEventListener('click', toggleFullscreen);
+document.addEventListener('keydown', function(e) {
+  if (e.altKey && e.key === 'Enter') { e.preventDefault(); toggleFullscreen(); }
+});
+document.addEventListener('fullscreenchange', function() {
+  if (document.fullscreenElement === canvas) {
+    canvas.requestPointerLock();
+    btnFs.textContent = 'Exit Fullscreen';
+  } else {
+    if (document.pointerLockElement) document.exitPointerLock();
+    btnFs.textContent = 'Fullscreen';
+  }
+});
+
+// --- Terminal toggle ---
+btnTerm.addEventListener('click', function() {
+  termVisible = !termVisible;
+  output.style.display = termVisible ? 'block' : 'none';
+  btnTerm.textContent = termVisible ? 'Hide Terminal' : 'Terminal';
+});
+
+// ===== Persistent storage (IndexedDB) for eduke32 cfg + save files =====
+// Mirrors /home/web_user/.eduke32 between MEMFS and an IndexedDB object store so
+// settings, save games and user-modified configs survive page reloads. The GRP
+// and other bulky container formats are excluded — the user re-supplies them.
+var EDUKE_DIR = '/home/web_user/.eduke32';
+var IDB_NAME = 'emduke32';
+var IDB_STORE = 'files';
+var MAX_PERSIST_SIZE = 16 * 1024 * 1024; // skip anything larger per-file
+var FLUSH_INTERVAL_MS = 10000;
+var idbDB = null;
+var lastFlushed = {};        // relPath -> {size, mtime}
+var flushTimer = null;
+var flushInProgress = false;
+var persistRequested = false;
+var statusResetTimer = null;
+
+function idbOpen() {
+  return new Promise(function(resolve, reject) {
+    if (!window.indexedDB) { reject(new Error('IndexedDB unavailable')); return; }
+    var req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = function() { req.result.createObjectStore(IDB_STORE); };
+    req.onsuccess = function() { resolve(req.result); };
+    req.onerror = function() { reject(req.error); };
+    req.onblocked = function() { reject(new Error('IndexedDB blocked')); };
+  });
+}
+function idbGetAll(db) {
+  return new Promise(function(resolve, reject) {
+    var out = [];
+    var tx = db.transaction(IDB_STORE, 'readonly');
+    var cur = tx.objectStore(IDB_STORE).openCursor();
+    cur.onsuccess = function() {
+      var c = cur.result;
+      if (c) { out.push({ key: c.key, value: c.value }); c.continue(); }
+      else { resolve(out); }
+    };
+    cur.onerror = function() { reject(cur.error); };
+  });
+}
+function idbPut(db, key, value) {
+  return new Promise(function(resolve, reject) {
+    var tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(value, key);
+    tx.oncomplete = function() { resolve(); };
+    tx.onerror = function() { reject(tx.error); };
+    tx.onabort = function() { reject(tx.error || new Error('tx aborted')); };
+  });
+}
+function idbDelete(db, key) {
+  return new Promise(function(resolve, reject) {
+    var tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).delete(key);
+    tx.oncomplete = function() { resolve(); };
+    tx.onerror = function() { reject(tx.error); };
+  });
+}
+
+function shouldSkipFile(rel, size) {
+  if (size > MAX_PERSIST_SIZE) return true;
+  var u = rel.toUpperCase();
+  if (u.length >= 4) {
+    var ext = u.substring(u.length - 4);
+    if (ext === '.GRP' || ext === '.ZIP' || ext === '.SSI') return true;
+  }
+  return false;
+}
+
+function fsWalk(dir, prefix, out) {
+  var entries;
+  try { entries = Module.FS.readdir(dir); } catch (e) { return; }
+  for (var i = 0; i < entries.length; i++) {
+    var name = entries[i];
+    if (name === '.' || name === '..') continue;
+    var full = dir + '/' + name;
+    var rel = prefix ? (prefix + '/' + name) : name;
+    var st;
+    try { st = Module.FS.stat(full); } catch (e) { continue; }
+    if (Module.FS.isDir(st.mode)) {
+      fsWalk(full, rel, out);
+    } else if (Module.FS.isFile(st.mode)) {
+      out.push({ full: full, rel: rel, size: st.size, mtime: +st.mtime });
+    }
+  }
+}
+
+function briefStatus(text) {
+  statusEl.textContent = text;
+  if (statusResetTimer) clearTimeout(statusResetTimer);
+  statusResetTimer = setTimeout(function() {
+    if (statusEl.textContent === text) statusEl.textContent = 'Ready';
+  }, 2500);
+}
+
+function requestPersistenceOnce() {
+  if (persistRequested) return;
+  persistRequested = true;
+  if (navigator.storage && navigator.storage.persist) {
+    navigator.storage.persist().then(function(granted) {
+      console.log('[storage] persistent storage ' + (granted ? 'granted' : 'best-effort'));
+    }).catch(function() {});
+  }
+}
+
+async function loadFromIDB() {
+  try { idbDB = await idbOpen(); }
+  catch (e) { console.warn('[storage] open failed:', e); return 0; }
+  var entries;
+  try { entries = await idbGetAll(idbDB); }
+  catch (e) { console.warn('[storage] read failed:', e); return 0; }
+  try { Module.FS.mkdir('/home/web_user'); } catch (e) { /* exists */ }
+  try { Module.FS.mkdir(EDUKE_DIR); } catch (e) { /* exists */ }
+  var count = 0;
+  for (var i = 0; i < entries.length; i++) {
+    var key = entries[i].key;
+    var val = entries[i].value;
+    if (typeof key !== 'string' || !val) continue;
+    // Recreate nested directories if the key contains a path separator.
+    var parts = key.split('/');
+    var dir = EDUKE_DIR;
+    for (var j = 0; j < parts.length - 1; j++) {
+      dir += '/' + parts[j];
+      try { Module.FS.mkdir(dir); } catch (e) { /* exists */ }
+    }
+    try {
+      var bytes = val instanceof Uint8Array ? val : new Uint8Array(val);
+      Module.FS.writeFile(EDUKE_DIR + '/' + key, bytes);
+      count++;
+    } catch (e) {
+      console.warn('[storage] restore failed for ' + key + ':', e);
+    }
+  }
+  // Prime lastFlushed so identical files are not re-written on the first flush.
+  var files = [];
+  fsWalk(EDUKE_DIR, '', files);
+  for (var i = 0; i < files.length; i++) {
+    var f = files[i];
+    if (shouldSkipFile(f.rel, f.size)) continue;
+    lastFlushed[f.rel] = { size: f.size, mtime: f.mtime };
+  }
+  return count;
+}
+
+async function flushToIDB() {
+  if (flushInProgress || !idbDB || !Module.FS) return;
+  flushInProgress = true;
+  try {
+    var files = [];
+    fsWalk(EDUKE_DIR, '', files);
+    var fsSet = {};
+    var toWrite = [];
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i];
+      if (shouldSkipFile(f.rel, f.size)) continue;
+      fsSet[f.rel] = f;
+      var last = lastFlushed[f.rel];
+      if (!last || last.size !== f.size || last.mtime !== f.mtime) toWrite.push(f);
+    }
+    var toDelete = [];
+    for (var rel in lastFlushed) {
+      if (!(rel in fsSet)) toDelete.push(rel);
+    }
+    if (toWrite.length === 0 && toDelete.length === 0) return;
+
+    var written = 0;
+    var quotaHit = false;
+    for (var i = 0; i < toWrite.length; i++) {
+      var f = toWrite[i];
+      try {
+        var data = Module.FS.readFile(f.full);
+        var buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+        await idbPut(idbDB, f.rel, buf);
+        lastFlushed[f.rel] = { size: f.size, mtime: f.mtime };
+        written++;
+      } catch (e) {
+        var msg = String(e && e.name || e);
+        if (/Quota/i.test(msg)) { quotaHit = true; break; }
+        console.warn('[storage] write failed for ' + f.rel + ':', e);
+      }
+    }
+    for (var i = 0; i < toDelete.length; i++) {
+      try {
+        await idbDelete(idbDB, toDelete[i]);
+        delete lastFlushed[toDelete[i]];
+      } catch (e) {
+        console.warn('[storage] delete failed for ' + toDelete[i] + ':', e);
+      }
+    }
+    if (written > 0) {
+      briefStatus('Saved ' + written + ' file' + (written > 1 ? 's' : ''));
+      log('[storage] persisted ' + written + ' file(s)');
+      requestPersistenceOnce();
+    }
+    if (quotaHit) {
+      briefStatus('Storage full — saves may not persist');
+      log('[storage] QuotaExceededError — some files not persisted');
+    }
+  } finally {
+    flushInProgress = false;
+  }
+}
+
+function startPersistence() {
+  if (flushTimer) return;
+  flushTimer = setInterval(flushToIDB, FLUSH_INTERVAL_MS);
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'hidden') flushToIDB();
+  });
+  window.addEventListener('pagehide', function() { flushToIDB(); });
+  window.addEventListener('beforeunload', function() { flushToIDB(); });
+}
+
+// --- Load eduke32.js via script tag (pure script loader; init is owned by prepareInitSequence) ---
+function loadEngine() {
+  var ts = document.createElement('script');
+  ts.src = 'vendor/webaudio-tinysynth/webaudio-tinysynth.js?v=' + Date.now();
+  ts.onload = function() {
+    initTinySynth();
+    var s = document.createElement('script');
+    s.src = 'eduke32.js?v=' + Date.now();
+    s.async = true;
+    document.body.appendChild(s);
+  };
+  ts.onerror = function() {
+    // TinySynth missing — load engine without music (startMidiPolling will no-op).
+    var s = document.createElement('script');
+    s.src = 'eduke32.js?v=' + Date.now();
+    s.async = true;
+    document.body.appendChild(s);
+  };
+  document.body.appendChild(ts);
+}
+
+// --- Unified runtime-init sequencer ---
+// Emscripten's callMain isn't in EXPORTED_RUNTIME_METHODS in this build, so we
+// cannot use noInitialRun + manual callMain. Instead we block the auto-main-call
+// by holding an addRunDependency until our async IDB restore (and optional GRP
+// write) has completed. We also arrange for the restore to run AFTER the
+// --preload-file package has finished extracting, so user-persisted cfgs
+// override the default DUKE3D.CFG that ships in eduke32.data.
+function prepareInitSequence(grpBuffer) {
+  var idbTriggered = false;
+  var idbArmed = false;
+
+  function startIdbRestore() {
+    if (idbTriggered) return;
+    idbTriggered = true;
+    (async function() {
+      try {
+        try { Module.FS.mkdir('/home/web_user'); } catch (e) { /* exists */ }
+        try { Module.FS.mkdir(EDUKE_DIR); } catch (e) { /* exists */ }
+        if (grpBuffer) {
+          statusEl.textContent = 'Writing GRP to virtual FS...';
+          Module.FS.writeFile(EDUKE_DIR + '/DUKE3D.GRP', new Uint8Array(grpBuffer));
+        }
+        statusEl.textContent = 'Restoring saved settings...';
+        try {
+          var n = await loadFromIDB();
+          if (n > 0) log('[storage] restored ' + n + ' file(s) from browser storage');
+        } catch (e) { console.warn('[storage] load failed:', e); }
+        startPersistence();
+      } finally {
+        // Release our run dep so Emscripten proceeds to doRun() -> main().
+        Module.removeRunDependency('emduke-init');
+      }
+    })();
+  }
+
+  // Chain onto monitorRunDependencies so we can detect "only our dep left".
+  var prevMonitor = Module.monitorRunDependencies;
+  Module.monitorRunDependencies = function(left) {
+    if (prevMonitor) prevMonitor.call(this, left);
+    if (idbArmed && !idbTriggered && left === 1) startIdbRestore();
+  };
+
+  // Queue our preRun handler BEFORE the engine script loads so it is iterated
+  // first (then the engine's runWithFS preload handler runs second). Our
+  // handler adds the gating run dep, and — if preload is active — arms the
+  // monitor so we wait for preload's file writes before restoring from IDB.
+  Module.preRun = Module.preRun || [];
+  Module.preRun.push(function() {
+    Module.addRunDependency('emduke-init');
+    if ((Module.expectedDataFileDownloads || 0) > 0) {
+      idbArmed = true; // monitor will fire startIdbRestore at left === 1
+    } else {
+      startIdbRestore(); // no preload — nothing to wait for
+    }
+  });
+
+  Module.onRuntimeInitialized = function() {
+    console.log('Runtime ready, _emduke_getMidiCommand:', typeof Module._emduke_getMidiCommand);
+    console.log('TinySynth:', typeof window.tinySynth);
+    startMidiPolling();
+    statusEl.textContent = 'Starting game...';
+    // Emscripten auto-calls main right after this hook returns.
+  };
+}
+
+// --- GRP file upload path ---
+function handleGRP(arrayBuffer) {
+  dropzone.classList.add('hidden');
+  statusEl.textContent = 'Loading engine...';
+  prepareInitSequence(arrayBuffer);
+  loadEngine();
+}
+
+function readFile(file) {
+  var reader = new FileReader();
+  reader.onload = function() { handleGRP(reader.result); };
+  reader.readAsArrayBuffer(file);
+}
+
+// --- Drop zone events ---
+dropzone.addEventListener('click', function(e) {
+  if (e.target === fileInput) return;
+  fileInput.click();
+});
+fileInput.addEventListener('change', function() {
+  if (fileInput.files.length) readFile(fileInput.files[0]);
+});
+dropzone.addEventListener('dragover', function(e) { e.preventDefault(); dropzone.classList.add('dragover'); });
+dropzone.addEventListener('dragleave', function() { dropzone.classList.remove('dragover'); });
+dropzone.addEventListener('drop', function(e) {
+  e.preventDefault();
+  dropzone.classList.remove('dragover');
+  if (e.dataTransfer.files.length) readFile(e.dataTransfer.files[0]);
+});
+
+// --- Detect preloaded data or show drop zone ---
+fetch('eduke32.data', { method: 'HEAD' }).then(function(r) {
+  if (r.ok) {
+    statusEl.textContent = 'Loading game data...';
+    prepareInitSequence(null);
+    loadEngine();
+  } else {
+    throw new Error('no data');
+  }
+}).catch(function() {
+  statusEl.textContent = 'Waiting for game data...';
+  dropzone.classList.remove('hidden');
+});
+</script>
+</body>
+</html>

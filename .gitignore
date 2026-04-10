@@ -47,3 +47,7 @@ project.xcworkspace/
 *.dSYM/
 
 .DS_Store
+
+# Emscripten data bundles — contain copyrighted DUKE3D.GRP, never commit
+/eduke32.data
+/mapster32.data
